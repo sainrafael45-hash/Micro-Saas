@@ -1,0 +1,267 @@
+{
+  "name": "MicroSaaS Inventario WhatsApp - Evolution API + Gemini + Supabase",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "evolution-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook Evolution API",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "webhookId": "evolution-webhook-001"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Paso 1: Filtro de Imágenes - Evolution API / Baileys\nconst body = $input.first().json.body ?? $input.first().json;\n\n// Tipos de mensaje que contienen imagen según el estándar Baileys\nconst IMAGE_TYPES = ['imageMessage', 'image'];\n\n// --- Extracción del tipo de mensaje ---\nconst messageType =\n  body?.data?.messageType ||\n  body?.messageType ||\n  body?.data?.message?.messageType ||\n  null;\n\nconst message =\n  body?.data?.message ||\n  body?.message ||\n  null;\n\n// --- Filtro principal: solo imágenes ---\nif (!messageType || !IMAGE_TYPES.includes(messageType)) {\n  return []; // Detiene silenciosamente\n}\n\n// --- Extracción del remitente ---\nconst remoteJid =\n  body?.data?.key?.remoteJid ||\n  body?.key?.remoteJid ||\n  body?.data?.remoteJid ||\n  null;\n\nif (!remoteJid) {\n  return [];\n}\n\n// --- Extracción del número limpio ---\nconst phoneNumber = remoteJid.replace(/@s\\.whatsapp\\.net$/, '').replace(/@.*$/, '');\n\n// --- Extracción del nombre ---\nconst pushName =\n  body?.data?.pushName ||\n  body?.pushName ||\n  null;\n\n// --- Extracción de la imagen ---\nconst imageBase64 =\n  message?.imageMessage?.jpegThumbnail ||\n  message?.base64 ||\n  body?.data?.message?.base64 ||\n  null;\n\nconst imageUrl =\n  message?.imageMessage?.url ||\n  body?.data?.mediaUrl ||\n  body?.mediaUrl ||\n  null;\n\nconst imageCaption =\n  message?.imageMessage?.caption ||\n  body?.data?.message?.imageMessage?.caption ||\n  '';\n\n// --- Validación ---\nif (!imageBase64 && !imageUrl) {\n  return [];\n}\n\n// --- Instancia de Evolution API ---\nconst instanceName =\n  body?.instance ||\n  body?.data?.instance ||\n  'default';\n\n// --- Output limpio ---\nreturn [\n  {\n    json: {\n      phoneNumber,\n      remoteJid,\n      pushName,\n      instanceName,\n      imageBase64: imageBase64 ?? null,\n      imageUrl:   imageUrl   ?? null,\n      imageCaption,\n      messageType,\n      receivedAt: new Date().toISOString(),\n    }\n  }\n];"
+      },
+      "id": "node-filtro-imagenes",
+      "name": "Filtro de Imágenes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={{ $env.GEMINI_API_KEY }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"system_instruction\": {\n    \"parts\": [\n      {\n        \"text\": \"Eres un sistema de clasificación de prendas de ropa para un inventario de moda. Tu única función es analizar imágenes de prendas y extraer datos estructurados.\\n\\nREGLAS ABSOLUTAS:\\n1. Responde ÚNICAMENTE con un objeto JSON puro. Sin texto adicional.\\n2. PROHIBIDO usar bloques de código markdown (``` o ```json).\\n3. PROHIBIDO incluir saludos, explicaciones, notas o comentarios.\\n4. PROHIBIDO usar comillas tipográficas. Usa solo comillas dobles estándar.\\n5. Si no puedes determinar un valor con certeza, usa null.\\n\\nESQUEMA DE RESPUESTA OBLIGATORIO:\\n{\\n  \\\"prenda\\\": \\\"string en minúsculas (ej: camisa, pantalon, vestido, chaqueta, falda, zapato, blusa, short, abrigo, sudadera)\\\",\\n  \\\"color\\\": \\\"string en minúsculas con el color dominante\\\",\\n  \\\"talla_detectada\\\": \\\"string si hay talla visible o null\\\",\\n  \\\"precio_detectado\\\": \\\"número o null\\\"\\n}\\n\\nINSTRUCCIONES DE ANÁLISIS:\\n- Enfócate en la prenda principal de la imagen.\\n- Para prenda: usa el término más simple y genérico en español, siempre en minúsculas.\\n- Para color: describe el color dominante. Si es estampado, indica el color base.\\n- Para talla_detectada: busca texto en etiquetas, stickers o bordados.\\n- Para precio_detectado: devuelve solo el número sin símbolo de moneda.\\n\\nEJEMPLO VÁLIDO:\\n{\\\"prenda\\\":\\\"camisa\\\",\\\"color\\\":\\\"azul marino\\\",\\\"talla_detectada\\\":\\\"M\\\",\\\"precio_detectado\\\":45000}\"\n      }\n    ]\n  },\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"inline_data\": {\n            \"mime_type\": \"image/jpeg\",\n            \"data\": \"{{ $json.imageBase64 }}\"\n          }\n        },\n        {\n          \"text\": \"Analiza esta prenda y devuelve el JSON.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"temperature\": 0.1,\n    \"topP\": 0.8,\n    \"maxOutputTokens\": 256,\n    \"responseMimeType\": \"application/json\"\n  }\n}",
+        "options": {}
+      },
+      "id": "node-gemini-vision",
+      "name": "Gemini Vision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Paso 2b: Parsear y validar respuesta de Gemini\nconst geminiRaw =\n  $input.first().json?.candidates?.[0]?.content?.parts?.[0]?.text || '';\n\n// Limpieza defensiva\nconst cleaned = geminiRaw\n  .replace(/```json/gi, '')\n  .replace(/```/g, '')\n  .trim();\n\nlet parsed;\ntry {\n  parsed = JSON.parse(cleaned);\n} catch (e) {\n  throw new Error(`Gemini devolvió JSON inválido: \"${cleaned}\"`);\n}\n\n// Validación de claves obligatorias\nconst requiredKeys = ['prenda', 'color', 'talla_detectada', 'precio_detectado'];\nfor (const key of requiredKeys) {\n  if (!(key in parsed)) {\n    throw new Error(`Clave faltante en respuesta de Gemini: \"${key}\"`);\n  }\n}\n\n// Normalización\nconst result = {\n  prenda:           String(parsed.prenda  || '').toLowerCase().trim(),\n  color:            String(parsed.color   || '').toLowerCase().trim(),\n  talla_detectada:  parsed.talla_detectada  ?? null,\n  precio_detectado: parsed.precio_detectado != null\n                      ? Number(parsed.precio_detectado)\n                      : null,\n  // Propagamos datos del Paso 1\n  phoneNumber:   $('Filtro de Imágenes').first().json.phoneNumber,\n  remoteJid:     $('Filtro de Imágenes').first().json.remoteJid,\n  pushName:      $('Filtro de Imágenes').first().json.pushName,\n  instanceName:  $('Filtro de Imágenes').first().json.instanceName,\n  receivedAt:    $('Filtro de Imágenes').first().json.receivedAt,\n};\n\nreturn [{ json: result }];"
+      },
+      "id": "node-parsear-gemini",
+      "name": "Parsear Respuesta Gemini",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/inventario?prenda=eq.{{ $json.prenda }}&select=id,prenda,color,tallas,stock_por_talla,precio_base,activo",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-supabase-stock",
+      "name": "Consulta Supabase Stock",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Paso 3: Evaluación de stock contra datos de Gemini\n\n// --- Datos de Gemini ---\nconst gemini = $('Parsear Respuesta Gemini').first().json;\n\nconst prendaBuscada  = gemini.prenda;\nconst colorBuscado   = gemini.color;\nconst tallaBuscada   = gemini.talla_detectada;\nconst precioDetect   = gemini.precio_detectado;\n\n// --- Resultados de Supabase ---\nconst productos = $input.all().map(item => item.json);\n\n// CASO 1: Sin resultados\nif (!productos || productos.length === 0) {\n  return [{\n    json: {\n      hayStock:       false,\n      motivoNoStock:  'prenda_no_encontrada',\n      mensaje:        `No tenemos \"${prendaBuscada}\" registrada en el inventario.`,\n      prendaBuscada,\n      colorBuscado,\n      tallaBuscada,\n      precioDetect,\n      matchProducto:  null,\n      phoneNumber:    gemini.phoneNumber,\n      remoteJid:      gemini.remoteJid,\n      pushName:       gemini.pushName,\n      instanceName:   gemini.instanceName,\n    }\n  }];\n}\n\n// HELPER: normaliza strings\nconst norm = (str) =>\n  (str ?? '').toLowerCase().normalize('NFD')\n    .replace(/[\\u0300-\\u036f]/g, '')\n    .trim();\n\n// PASO A: Filtrado por color\nlet candidatos = productos.filter(p => p.activo !== false);\n\nif (colorBuscado) {\n  const porColorExacto = candidatos.filter(p => norm(p.color) === norm(colorBuscado));\n  const porColorParcial = candidatos.filter(p =>\n    norm(p.color).includes(norm(colorBuscado)) ||\n    norm(colorBuscado).includes(norm(p.color))\n  );\n  candidatos = porColorExacto.length > 0\n    ? porColorExacto\n    : porColorParcial.length > 0\n      ? porColorParcial\n      : candidatos;\n}\n\n// PASO B: Evaluación de stock por talla\nlet matchProducto     = null;\nlet hayStock          = false;\nlet motivoNoStock     = null;\nlet stockDisponible   = null;\nlet tallasConStock    = [];\n\nfor (const producto of candidatos) {\n  const stockPorTalla = producto.stock_por_talla ?? {};\n\n  tallasConStock = Object.entries(stockPorTalla)\n    .filter(([, unidades]) => Number(unidades) > 0)\n    .map(([talla]) => talla);\n\n  const hayAlgunStock = tallasConStock.length > 0;\n\n  if (!hayAlgunStock) {\n    motivoNoStock  = 'agotado_todas_tallas';\n    matchProducto  = producto;\n    continue;\n  }\n\n  if (tallaBuscada) {\n    const tallaNorm  = norm(tallaBuscada);\n    const stockTalla = Object.entries(stockPorTalla).find(\n      ([talla]) => norm(talla) === tallaNorm\n    );\n\n    if (stockTalla && Number(stockTalla[1]) > 0) {\n      hayStock        = true;\n      motivoNoStock   = null;\n      stockDisponible = Number(stockTalla[1]);\n      matchProducto   = producto;\n      break;\n    } else {\n      motivoNoStock = 'talla_agotada';\n      matchProducto = producto;\n    }\n  } else {\n    hayStock        = true;\n    motivoNoStock   = null;\n    stockDisponible = tallasConStock.reduce((sum, t) =>\n      sum + Number(stockPorTalla[t]), 0\n    );\n    matchProducto   = producto;\n    break;\n  }\n}\n\n// PASO C: Mensaje de respuesta\nlet mensajeRespuesta;\n\nif (hayStock && tallaBuscada) {\n  mensajeRespuesta =\n    `✅ ¡Tenemos tu ${matchProducto.prenda} ${matchProducto.color} en talla ${tallaBuscada}!\\n` +\n    `📦 Stock disponible: ${stockDisponible} unidad(es)\\n` +\n    `💰 Precio: $${matchProducto.precio_base?.toLocaleString('es-CO') ?? precioDetect ?? 'consultar'}`;\n} else if (hayStock && !tallaBuscada) {\n  mensajeRespuesta =\n    `✅ Tenemos ${matchProducto.prenda} ${matchProducto.color} disponible.\\n` +\n    `📏 Tallas con stock: ${tallasConStock.join(', ')}\\n` +\n    `💰 Precio: $${matchProducto.precio_base?.toLocaleString('es-CO') ?? precioDetect ?? 'consultar'}\\n` +\n    `¿Cuál talla necesitas?`;\n} else if (motivoNoStock === 'talla_agotada') {\n  mensajeRespuesta =\n    `😔 Lo sentimos, la talla *${tallaBuscada}* de la ${matchProducto.prenda} ${matchProducto.color} está agotada.\\n` +\n    `📏 Tallas disponibles: ${tallasConStock.join(', ') || 'ninguna por ahora'}`;\n} else if (motivoNoStock === 'agotado_todas_tallas') {\n  mensajeRespuesta =\n    `😔 Tenemos la ${matchProducto?.prenda} ${matchProducto?.color} en catálogo, pero está agotada en todas las tallas.`;\n} else {\n  mensajeRespuesta =\n    `🔍 No encontramos coincidencias para *${prendaBuscada}* ` +\n    `${colorBuscado ? `en color *${colorBuscado}*` : ''} en nuestro inventario actual.`;\n}\n\nreturn [{\n  json: {\n    hayStock,\n    motivoNoStock,\n    mensajeRespuesta,\n    stockDisponible,\n    tallasConStock,\n    tallaBuscada,\n    colorBuscado,\n    prendaBuscada,\n    precioDetect,\n    matchProducto,\n    phoneNumber:   gemini.phoneNumber,\n    remoteJid:     gemini.remoteJid,\n    pushName:      gemini.pushName,\n    instanceName:  gemini.instanceName,\n  }\n}];"
+      },
+      "id": "node-evaluar-stock",
+      "name": "Evaluar Stock y Match",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Paso 4: Construcción del mensaje de respuesta para WhatsApp\n\nconst data = $input.first().json;\n\nconst {\n  hayStock,\n  motivoNoStock,\n  matchProducto,\n  tallaBuscada,\n  colorBuscado,\n  prendaBuscada,\n  tallasConStock,\n  stockDisponible,\n  precioDetect,\n  pushName,\n  remoteJid,\n  instanceName,\n  phoneNumber,\n} = data;\n\n// HELPER: formatea precio en pesos colombianos\nconst formatPrecio = (valor) => {\n  if (valor == null) return null;\n  return Number(valor).toLocaleString('es-CO', {\n    style:    'currency',\n    currency: 'COP',\n    minimumFractionDigits: 0,\n  });\n};\n\n// HELPER: capitaliza primera letra\nfunction capitalize(str) {\n  if (!str) return '';\n  return str.charAt(0).toUpperCase() + str.slice(1);\n}\n\nconst nombre = pushName ? `*${pushName.split(' ')[0]}*` : 'amig@';\nconst precioFinal = formatPrecio(matchProducto?.precio_base ?? precioDetect);\n\nlet textoMensaje;\n\nif (hayStock) {\n  if (tallaBuscada) {\n    textoMensaje =\n      `¡Hola, ${nombre}! 👋\\n\\n` +\n      `✅ ¡Excelente elección! Tenemos disponible:\\n\\n` +\n      `👕 *${capitalize(matchProducto.prenda)}* en color *${matchProducto.color}*\\n` +\n      `📏 Talla: *${tallaBuscada}*\\n` +\n      `📦 Unidades disponibles: *${stockDisponible}*\\n` +\n      (precioFinal ? `💰 Precio: *${precioFinal}*\\n` : '') +\n      `\\n¿Te gustaría apartar una unidad? Escríbenos *SÍ* para continuar con tu pedido. 🛍️`;\n  } else {\n    const tallasTexto = tallasConStock.join(' | ');\n    textoMensaje =\n      `¡Hola, ${nombre}! 👋\\n\\n` +\n      `✅ ¡Tenemos esta prenda disponible!\\n\\n` +\n      `👕 *${capitalize(matchProducto.prenda)}* en color *${matchProducto.color}*\\n` +\n      `📏 Tallas con stock: *${tallasTexto}*\\n` +\n      (precioFinal ? `💰 Precio: *${precioFinal}*\\n` : '') +\n      `\\n¿Cuál talla necesitas? Responde con la talla y la apartamos para ti. 😊`;\n  }\n} else {\n  if (motivoNoStock === 'talla_agotada') {\n    const tallasTexto = tallasConStock.length > 0 ? tallasConStock.join(' | ') : null;\n    textoMensaje =\n      `¡Hola, ${nombre}! 👋\\n\\n` +\n      `😔 Lo sentimos mucho. La talla *${tallaBuscada}* de la ` +\n      `*${capitalize(matchProducto.prenda)} ${matchProducto.color}* ` +\n      `se encuentra agotada en este momento.\\n\\n` +\n      (tallasTexto\n        ? `📏 Aún tenemos disponibilidad en: *${tallasTexto}*\\n\\n¿Te interesa alguna de estas tallas? 😊`\n        : `⏳ Estamos esperando reposición próximamente.\\n\\n¿Deseas que te avisemos cuando llegue tu talla? Escribe *AVISAR* y te notificamos.`);\n  } else if (motivoNoStock === 'agotado_todas_tallas') {\n    textoMensaje =\n      `¡Hola, ${nombre}! 👋\\n\\n` +\n      `😔 Qué pena informarte que la ` +\n      `*${capitalize(matchProducto.prenda)} ${matchProducto.color}* ` +\n      `está agotada en todas las tallas por el momento.\\n\\n` +\n      `⏳ Esperamos reposición pronto.\\n\\n` +\n      `¿Quieres que te notifiquemos cuando vuelva a estar disponible? Escribe *AVISAR* y te avisamos apenas llegue. 🔔`;\n  } else {\n    textoMensaje =\n      `¡Hola, ${nombre}! 👋\\n\\n` +\n      `🔍 Revisamos nuestro inventario y por el momento no contamos con ` +\n      `*${prendaBuscada}*${colorBuscado ? ` en color *${colorBuscado}*` : ''} ` +\n      `en nuestra colección actual.\\n\\n` +\n      `📲 Si tienes otra prenda en mente, ¡envíanos la foto y la buscamos! ` +\n      `También puedes escribirnos directamente para más información. 😊`;\n  }\n}\n\nreturn [{\n  json: {\n    number:      remoteJid,\n    text:        textoMensaje,\n    instanceName,\n    phoneNumber,\n    remoteJid,\n    hayStock,\n    motivoNoStock: motivoNoStock ?? null,\n  }\n}];"
+      },
+      "id": "node-construir-mensaje",
+      "name": "Construir Mensaje WhatsApp",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $json.instanceName }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.EVOLUTION_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $json.number }}\",\n  \"text\":   \"{{ $json.text }}\",\n  \"delay\":  1200\n}",
+        "options": {}
+      },
+      "id": "node-enviar-whatsapp",
+      "name": "Enviar Mensaje Evolution API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "allIncomingItems",
+        "options": {}
+      },
+      "id": "node-respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1780, 480]
+    }
+  ],
+  "connections": {
+    "Webhook Evolution API": {
+      "main": [
+        [
+          {
+            "node": "Filtro de Imágenes",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filtro de Imágenes": {
+      "main": [
+        [
+          {
+            "node": "Gemini Vision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Vision": {
+      "main": [
+        [
+          {
+            "node": "Parsear Respuesta Gemini",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parsear Respuesta Gemini": {
+      "main": [
+        [
+          {
+            "node": "Consulta Supabase Stock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consulta Supabase Stock": {
+      "main": [
+        [
+          {
+            "node": "Evaluar Stock y Match",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluar Stock y Match": {
+      "main": [
+        [
+          {
+            "node": "Construir Mensaje WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Construir Mensaje WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "Enviar Mensaje Evolution API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "whatsapp"
+    },
+    {
+      "name": "inventario"
+    },
+    {
+      "name": "gemini"
+    },
+    {
+      "name": "supabase"
+    },
+    {
+      "name": "micro-saas"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-05-23T00:00:00.000Z",
+  "versionId": "v1.0.0"
+}
